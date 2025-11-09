@@ -310,6 +310,7 @@ def refresh_data():
         st.dataframe(data.tail(10)[['Open', 'High', 'Low', 'Close', 'Volume']])
 
         # 優化圖表顯示：使用 Plotly 互動圖表，並排顯示
+        n_points = min(50, len(data))  # 確保數據足夠
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=('價格走勢 (Close)', 'MACD Histogram', '成交量 (Volume)', 'RSI'),
@@ -318,26 +319,26 @@ def refresh_data():
         )
 
         # 價格走勢 (線圖)
-        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['Close'].tail(50), mode='lines', name='Close', line=dict(color='blue')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['Close'].tail(n_points), mode='lines', name='Close', line=dict(color='blue')), row=1, col=1)
         fig.update_xaxes(title_text="時間", row=1, col=1)
         fig.update_yaxes(title_text="價格 (USD)", row=1, col=1)
 
         # MACD Histogram (柱狀 + 線)
-        colors = ['green' if h > 0 else 'red' for h in data['Histogram'].tail(50)]
-        fig.add_trace(go.Bar(x=data.index.tail(50), y=data['Histogram'].tail(50), name='Histogram', marker_color=colors), row=1, col=2)
-        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['MACD'].tail(50), mode='lines', name='MACD', line=dict(color='orange')), row=1, col=2)
+        colors = ['green' if h > 0 else 'red' for h in data['Histogram'].tail(n_points)]
+        fig.add_trace(go.Bar(x=data.index[-n_points:], y=data['Histogram'].tail(n_points), name='Histogram', marker_color=colors), row=1, col=2)
+        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['MACD'].tail(n_points), mode='lines', name='MACD', line=dict(color='orange')), row=1, col=2)
         fig.update_xaxes(title_text="時間", row=1, col=2)
         fig.update_yaxes(title_text="Histogram 值", row=1, col=2)
 
         # 成交量 (柱狀，顏色依價格變化)
-        price_change = data['Close'].tail(50).diff()
+        price_change = data['Close'].tail(n_points).diff()
         vol_colors = ['green' if pc > 0 else 'red' for pc in price_change]
-        fig.add_trace(go.Bar(x=data.index.tail(50), y=data['Volume'].tail(50), name='Volume', marker_color=vol_colors), row=2, col=1)
+        fig.add_trace(go.Bar(x=data.index[-n_points:], y=data['Volume'].tail(n_points), name='Volume', marker_color=vol_colors), row=2, col=1)
         fig.update_xaxes(title_text="時間", row=2, col=1)
         fig.update_yaxes(title_text="成交量", row=2, col=1)
 
         # RSI (線圖)
-        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['RSI'].tail(50), mode='lines', name='RSI', line=dict(color='purple')), row=2, col=2)
+        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['RSI'].tail(n_points), mode='lines', name='RSI', line=dict(color='purple')), row=2, col=2)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=2, annotation_text="超買線")
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=2, annotation_text="超賣線")
         fig.update_xaxes(title_text="時間", row=2, col=2)
