@@ -5,6 +5,9 @@ import numpy as np
 from datetime import datetime
 import requests  # 用於 Telegram API 請求
 import time  # 用於自動刷新時間檢查
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 # 計算 MACD
 def calculate_macd(df, fast=12, slow=26, signal=9):
@@ -162,7 +165,7 @@ with st.sidebar:
     interval = st.selectbox('K線間隔', ['1m', '5m', '15m', '1d'], index=1)  # 添加 1d 選項
     refresh_minutes = st.number_input('建議刷新間隔（分鐘）', value=5, min_value=1)
 
-    # 自動刷新選項（回歸非阻塞 rerun 邏輯，避免 sleep 阻塞 UI）
+    # 自動刷新選項
     enable_auto_refresh = st.checkbox('啟用自動刷新', value=False)
     if enable_auto_refresh:
         auto_interval_minutes = st.selectbox('自動刷新間隔 (分鐘)', [1, 2, 3, 4, 5], index=0)
@@ -306,17 +309,42 @@ def refresh_data():
         st.subheader('最近 10 根 K 線數據')
         st.dataframe(data.tail(10)[['Open', 'High', 'Low', 'Close', 'Volume']])
 
-        # 成交量走勢圖（確保顯示）
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.subheader('價格走勢')
-            st.line_chart(data['Close'].tail(50))
-        with col2:
-            st.subheader('MACD Histogram')
-            st.line_chart(data['Histogram'].tail(50))
-        with col3:
-            st.subheader('成交量')
-            st.bar_chart(data['Volume'].tail(50))
+        # 優化圖表顯示：使用 Plotly 互動圖表，並排顯示
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('價格走勢 (Close)', 'MACD Histogram', '成交量 (Volume)', 'RSI'),
+            vertical_spacing=0.1,
+            row_heights=[0.6, 0.4]
+        )
+
+        # 價格走勢 (線圖)
+        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['Close'].tail(50), mode='lines', name='Close', line=dict(color='blue')), row=1, col=1)
+        fig.update_xaxes(title_text="時間", row=1, col=1)
+        fig.update_yaxes(title_text="價格 (USD)", row=1, col=1)
+
+        # MACD Histogram (柱狀 + 線)
+        colors = ['green' if h > 0 else 'red' for h in data['Histogram'].tail(50)]
+        fig.add_trace(go.Bar(x=data.index.tail(50), y=data['Histogram'].tail(50), name='Histogram', marker_color=colors), row=1, col=2)
+        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['MACD'].tail(50), mode='lines', name='MACD', line=dict(color='orange')), row=1, col=2)
+        fig.update_xaxes(title_text="時間", row=1, col=2)
+        fig.update_yaxes(title_text="Histogram 值", row=1, col=2)
+
+        # 成交量 (柱狀，顏色依價格變化)
+        price_change = data['Close'].tail(50).diff()
+        vol_colors = ['green' if pc > 0 else 'red' for pc in price_change]
+        fig.add_trace(go.Bar(x=data.index.tail(50), y=data['Volume'].tail(50), name='Volume', marker_color=vol_colors), row=2, col=1)
+        fig.update_xaxes(title_text="時間", row=2, col=1)
+        fig.update_yaxes(title_text="成交量", row=2, col=1)
+
+        # RSI (線圖)
+        fig.add_trace(go.Scatter(x=data.index.tail(50), y=data['RSI'].tail(50), mode='lines', name='RSI', line=dict(color='purple')), row=2, col=2)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=2, annotation_text="超買線")
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=2, annotation_text="超賣線")
+        fig.update_xaxes(title_text="時間", row=2, col=2)
+        fig.update_yaxes(title_text="RSI 值", row=2, col=2, range=[0, 100])
+
+        fig.update_layout(height=600, title_text=f"{ticker} 技術指標圖表", showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
 
         # 最後更新時間戳（視覺確認刷新）
         st.info(f"最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -324,7 +352,7 @@ def refresh_data():
 # 初始載入數據
 refresh_data()
 
-# 自動刷新邏輯（回歸非阻塞 rerun 方法，避免 sleep 阻塞 UI 和圖表消失）
+# 自動刷新邏輯（非阻塞 rerun 方法）
 if 'last_refresh_time' not in st.session_state:
     st.session_state.last_refresh_time = time.time()
 
