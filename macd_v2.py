@@ -5,9 +5,14 @@ import numpy as np
 from datetime import datetime
 import requests  # 用於 Telegram API 請求
 import time  # 用於自動刷新時間檢查
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+
+# 嘗試導入 streamlit-autorefresh 以支援自動刷新
+try:
+    from streamlit_autorefresh import st_autorefresh
+    autorefresh_available = True
+except ImportError:
+    st_autorefresh = None
+    autorefresh_available = False
 
 # 計算 MACD
 def calculate_macd(df, fast=12, slow=26, signal=9):
@@ -169,6 +174,8 @@ with st.sidebar:
     enable_auto_refresh = st.checkbox('啟用自動刷新', value=False)
     if enable_auto_refresh:
         auto_interval_minutes = st.selectbox('自動刷新間隔 (分鐘)', [1, 2, 3, 4, 5], index=0)
+        if not autorefresh_available:
+            st.warning("要使用自動刷新，請安裝 `streamlit-autorefresh`: `pip install streamlit-autorefresh`")
     else:
         auto_interval_minutes = 0
 
@@ -191,6 +198,10 @@ with st.sidebar:
         enable_telegram_buy = False
         enable_telegram_sell = False
         st.info("啟用 Telegram 前，請設定 secrets.toml。")
+
+# 自動刷新邏輯（使用 streamlit-autorefresh）
+if enable_auto_refresh and autorefresh_available and auto_interval_minutes > 0:
+    st_autorefresh(interval=auto_interval_minutes * 60 * 1000, limit=None, key='auto_refresh')
 
 placeholder = st.empty()
 
@@ -309,66 +320,29 @@ def refresh_data():
         st.subheader('最近 10 根 K 線數據')
         st.dataframe(data.tail(10)[['Open', 'High', 'Low', 'Close', 'Volume']])
 
-        # 優化圖表顯示：使用 Plotly 互動圖表，並排顯示
-        n_points = min(50, len(data))  # 確保數據足夠
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('價格走勢 (Close)', 'MACD Histogram', '成交量 (Volume)', 'RSI'),
-            vertical_spacing=0.1,
-            row_heights=[0.6, 0.4]
-        )
-
-        # 價格走勢 (線圖)
-        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['Close'].tail(n_points), mode='lines', name='Close', line=dict(color='blue')), row=1, col=1)
-        fig.update_xaxes(title_text="時間", row=1, col=1)
-        fig.update_yaxes(title_text="價格 (USD)", row=1, col=1)
-
-        # MACD Histogram (柱狀 + 線)
-        colors = ['green' if h > 0 else 'red' for h in data['Histogram'].tail(n_points)]
-        fig.add_trace(go.Bar(x=data.index[-n_points:], y=data['Histogram'].tail(n_points), name='Histogram', marker_color=colors), row=1, col=2)
-        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['MACD'].tail(n_points), mode='lines', name='MACD', line=dict(color='orange')), row=1, col=2)
-        fig.update_xaxes(title_text="時間", row=1, col=2)
-        fig.update_yaxes(title_text="Histogram 值", row=1, col=2)
-
-        # 成交量 (柱狀，顏色依價格變化)
-        price_change = data['Close'].tail(n_points).diff()
-        vol_colors = ['green' if pc > 0 else 'red' for pc in price_change]
-        fig.add_trace(go.Bar(x=data.index[-n_points:], y=data['Volume'].tail(n_points), name='Volume', marker_color=vol_colors), row=2, col=1)
-        fig.update_xaxes(title_text="時間", row=2, col=1)
-        fig.update_yaxes(title_text="成交量", row=2, col=1)
-
-        # RSI (線圖)
-        fig.add_trace(go.Scatter(x=data.index[-n_points:], y=data['RSI'].tail(n_points), mode='lines', name='RSI', line=dict(color='purple')), row=2, col=2)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=2, annotation_text="超買線")
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=2, annotation_text="超賣線")
-        fig.update_xaxes(title_text="時間", row=2, col=2)
-        fig.update_yaxes(title_text="RSI 值", row=2, col=2, range=[0, 100])
-
-        fig.update_layout(height=600, title_text=f"{ticker} 技術指標圖表", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # 最後更新時間戳（視覺確認刷新）
-        st.info(f"最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        # 成交量走勢圖
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.subheader('價格走勢')
+            st.line_chart(data['Close'].tail(50))
+        with col2:
+            st.subheader('MACD Histogram')
+            st.line_chart(data['Histogram'].tail(50))
+        with col3:
+            st.subheader('成交量')
+            st.bar_chart(data['Volume'].tail(50))
 
 # 初始載入數據
 refresh_data()
 
-# 自動刷新邏輯（非阻塞 rerun 方法）
-if 'last_refresh_time' not in st.session_state:
-    st.session_state.last_refresh_time = time.time()
-
-if enable_auto_refresh and auto_interval_minutes > 0:
-    interval_seconds = auto_interval_minutes * 60
-    if time.time() - st.session_state.last_refresh_time >= interval_seconds:
-        st.session_state.last_refresh_time = time.time()
-        st.rerun()
-
 # 手動刷新按鈕（側邊欄參數變化時自動 reruns）
 st.sidebar.markdown("---")
 if st.sidebar.button('立即刷新數據'):
-    st.session_state.last_refresh_time = time.time()
     st.rerun()
 
 st.sidebar.info(f'建議每 {refresh_minutes} 分鐘手動刷新一次，以獲取最新數據。周末將自動切換至每日數據。')
 if enable_auto_refresh:
-    st.sidebar.success(f'自動刷新已啟用，每 {auto_interval_minutes} 分鐘一次。')
+    if autorefresh_available:
+        st.sidebar.success(f'自動刷新已啟用，每 {auto_interval_minutes} 分鐘一次。')
+    else:
+        st.sidebar.error('自動刷新不可用，請安裝 streamlit-autorefresh。')
