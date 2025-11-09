@@ -158,4 +158,188 @@ except:
 with st.sidebar:
     st.subheader('自訂參數')
     ticker = st.text_input('股票代碼', value='TSLA')
-    period = st.selectbox('數據天數', ['1d', '5d', '10d'],
+    period = st.selectbox('數據天數', ['1d', '5d', '10d'], index=1)  # 默認 5d 以避免周末 1d 問題
+    interval = st.selectbox('K線間隔', ['1m', '5m', '15m', '1d'], index=1)  # 添加 1d 選項
+    refresh_minutes = st.number_input('建議刷新間隔（分鐘）', value=5, min_value=1)
+
+    # 自動刷新選項（回歸非阻塞 rerun 邏輯，避免 sleep 阻塞 UI）
+    enable_auto_refresh = st.checkbox('啟用自動刷新', value=False)
+    if enable_auto_refresh:
+        auto_interval_minutes = st.selectbox('自動刷新間隔 (分鐘)', [1, 2, 3, 4, 5], index=0)
+    else:
+        auto_interval_minutes = 0
+
+    st.subheader('指標設置')
+    macd_fast = st.number_input('MACD Fast Period', value=12, min_value=1)
+    macd_slow = st.number_input('MACD Slow Period', value=26, min_value=1)
+    macd_signal = st.number_input('MACD Signal Period', value=9, min_value=1)
+    rsi_period = st.number_input('RSI Period', value=14, min_value=1)
+    stoch_k = st.number_input('Stochastic K Period', value=14, min_value=1)
+    stoch_d = st.number_input('Stochastic D Period', value=3, min_value=1)
+    mfi_period = st.number_input('MFI Period', value=14, min_value=1)
+    bb_period = st.number_input('BB Period', value=20, min_value=1)
+    bb_std = st.number_input('BB Std Dev', value=2.0, min_value=0.1, step=0.1)
+
+    # Telegram 通知選項
+    if telegram_ready:
+        enable_telegram_buy = st.checkbox('啟用買入 Telegram 通知（強烈買入信號時發送）', value=False)
+        enable_telegram_sell = st.checkbox('啟用賣出 Telegram 通知（強烈賣出信號時發送）', value=False)
+    else:
+        enable_telegram_buy = False
+        enable_telegram_sell = False
+        st.info("啟用 Telegram 前，請設定 secrets.toml。")
+
+placeholder = st.empty()
+
+def refresh_data():
+    data = get_data(ticker, period, interval)
+    if data.empty:
+        with placeholder:
+            is_weekend = datetime.now().weekday() >= 5
+            msg = '無法獲取數據，請檢查股票代碼。' if not is_weekend else '無法獲取數據，市場周末無 intraday 數據。'
+            st.error(msg)
+        return
+
+    required_cols = ['Close', 'High', 'Low', 'Volume']
+    missing_cols = [col for col in required_cols if col not in data.columns]
+    if missing_cols:
+        with placeholder:
+            st.error(f"數據缺少必要欄位: {missing_cols}，請檢查ticker或interval。")
+        return
+
+    data = data.tail(500)  # 限制數據長度
+
+    macd_line, signal_line, histogram = calculate_macd(data, fast=macd_fast, slow=macd_slow, signal=macd_signal)
+    data['MACD'] = macd_line
+    data['Signal'] = signal_line
+    data['Histogram'] = histogram
+
+    data['RSI'] = calculate_rsi(data, period=rsi_period)
+    k, d = calculate_stochastic(data, k_period=stoch_k, d_period=stoch_d)
+    data['%K'] = k
+    data['%D'] = d
+    data['OBV'] = calculate_obv(data)
+    data['MFI'] = calculate_mfi(data, period=mfi_period)
+    upper, middle, lower = calculate_bb(data, period=bb_period, std=bb_std)
+    data['BB_upper'] = upper
+    data['BB_middle'] = middle
+    data['BB_lower'] = lower
+    data = data.dropna()
+
+    if len(data) < 10:
+        with placeholder:
+            st.warning('數據不足（<10 根 K 線），無法計算完整指標。請調整 period 或 interval。')
+        return
+
+    latest_hist = pd.to_numeric(data['Histogram'].tail(3), errors='coerce')
+    diff_hist = latest_hist.diff().dropna()
+    # 確保數值比較
+    hist_increasing = all(pd.to_numeric(d, errors='coerce') > 0 and pd.notna(pd.to_numeric(d, errors='coerce')) for d in diff_hist) and (latest_hist.iloc[-1] < 0)
+    divergence = detect_bullish_divergence(data, data['Histogram'])
+    bearish_divergence = detect_bearish_divergence(data, data['Histogram'])
+    rsi_latest = data['RSI'].iloc[-1]
+    rsi_signal = (rsi_latest > 40) and (data['RSI'].iloc[-2] < 30) if len(data) > 1 else False
+    rsi_sell_signal = (rsi_latest < 60) and (data['RSI'].iloc[-2] > 70) if len(data) > 1 else False
+    stoch_cross = (data['%K'].iloc[-1] > data['%D'].iloc[-1]) and (data['%K'].iloc[-2] < 20) if len(data) > 1 else False
+    stoch_sell_cross = (data['%K'].iloc[-1] < data['%D'].iloc[-1]) and (data['%K'].iloc[-2] > 80) if len(data) > 1 else False
+    vol_mean = data['Volume'].rolling(10).mean().iloc[-1]
+    volume_spike = (not pd.isna(vol_mean)) and (data['Volume'].iloc[-1] > vol_mean * 1.5) if len(data) > 10 else False
+    volume_sell_spike = volume_spike and (data['Close'].iloc[-1] < data['Close'].iloc[-2]) if len(data) > 1 else False
+    obv_up = (data['OBV'].diff().iloc[-1] > 0) if len(data) > 1 else False
+    obv_down = (data['OBV'].diff().iloc[-1] < 0) if len(data) > 1 else False
+    mfi_signal = (data['MFI'].iloc[-1] > 20) and (data['MFI'].iloc[-2] < 20) if len(data) > 1 else False
+    mfi_sell_signal = (data['MFI'].iloc[-1] < 80) and (data['MFI'].iloc[-2] > 80) if len(data) > 1 else False
+    bb_signal = data['Close'].iloc[-1] < data['BB_lower'].iloc[-1] if len(data) > 0 else False
+    bb_sell_signal = data['Close'].iloc[-1] > data['BB_upper'].iloc[-1] if len(data) > 0 else False
+
+    # 買入信號
+    buy_signals = [hist_increasing, divergence, rsi_signal, stoch_cross, volume_spike, obv_up, mfi_signal, bb_signal]
+    buy_score = sum(buy_signals)
+
+    # 賣出信號（對應相反邏輯）
+    hist_decreasing = all(pd.to_numeric(d, errors='coerce') < 0 and pd.notna(pd.to_numeric(d, errors='coerce')) for d in diff_hist) and (latest_hist.iloc[-1] > 0)
+    sell_signals = [hist_decreasing, bearish_divergence, rsi_sell_signal, stoch_sell_cross, volume_sell_spike, obv_down, mfi_sell_signal, bb_sell_signal]
+    sell_score = sum(sell_signals)
+
+    buy_suggestion = '無明顯買入信號。繼續監測。'
+    if buy_score >= 3:
+        buy_suggestion = '潛在買入機會：MACD Histogram 縮小，預測 MACD 可能即將從負轉正。建議關注。'
+    if buy_score >= 5:
+        buy_suggestion = '強烈買入信號：多指標確認，預測 MACD 即將交叉轉正。考慮進場，設止損。'
+        # 買入通知
+        if enable_telegram_buy and telegram_ready:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message = f"<b>🚨 強烈買入信號！</b>\n股票: {ticker}\n時間: {now}\n收盤價: {data['Close'].iloc[-1]:.2f}\n信號強度: {buy_score}/8\n建議: {buy_suggestion}"
+            send_telegram_notification(message)
+
+    sell_suggestion = '無明顯賣出信號。繼續持有。'
+    if sell_score >= 3:
+        sell_suggestion = '潛在賣出機會：MACD Histogram 擴大，預測 MACD 可能即將從正轉負。建議關注。'
+    if sell_score >= 5:
+        sell_suggestion = '強烈賣出信號：多指標確認，預測 MACD 即將交叉轉負。考慮出場，設止盈。'
+        # 賣出通知
+        if enable_telegram_sell and telegram_ready:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message = f"<b>⚠️ 強烈賣出信號！</b>\n股票: {ticker}\n時間: {now}\n收盤價: {data['Close'].iloc[-1]:.2f}\n信號強度: {sell_score}/8\n建議: {sell_suggestion}"
+            send_telegram_notification(message)
+
+    with placeholder:
+        st.subheader('最新數據和指標')
+        st.metric("最新收盤價", f"{data['Close'].iloc[-1]:.2f}")
+        st.write(f'MACD Histogram: {data["Histogram"].iloc[-1]:.4f} (買入縮小: {"是" if hist_increasing else "否"}, 賣出擴大: {"是" if hist_decreasing else "否"})')
+        st.write(f'多頭分歧: {"檢測到" if divergence else "無"} | 熊頭分歧: {"檢測到" if bearish_divergence else "無"}')
+        st.write(f'RSI: {rsi_latest:.2f} (買入信號: {"是" if rsi_signal else "否"}, 賣出信號: {"是" if rsi_sell_signal else "否"})')
+        st.write(f'Stochastic %K/%D: {data["%K"].iloc[-1]:.2f} / {data["%D"].iloc[-1]:.2f} (買入交叉: {"是" if stoch_cross else "否"}, 賣出交叉: {"是" if stoch_sell_cross else "否"})')
+        st.write(f'OBV: {data["OBV"].iloc[-1]:,.0f} (上漲: {"是" if obv_up else "否"}, 下跌: {"是" if obv_down else "否"})')
+        st.write(f'MFI: {data["MFI"].iloc[-1]:.2f} (買入信號: {"是" if mfi_signal else "否"}, 賣出信號: {"是" if mfi_sell_signal else "否"})')
+        st.write(f'Bollinger Bands: Close vs Lower/Upper: {data["Close"].iloc[-1]:.2f} vs {data["BB_lower"].iloc[-1]:.2f} / {data["BB_upper"].iloc[-1]:.2f} (買入觸底: {"是" if bb_signal else "否"}, 賣出觸頂: {"是" if bb_sell_signal else "否"})')
+        st.write(f'成交量尖峰 (買入): {"是" if volume_spike else "否"} | (賣出): {"是" if volume_sell_spike else "否"}')
+
+        st.subheader('買入交易建議')
+        st.write(buy_suggestion)
+        st.write(f'買入信號強度: {buy_score}/8')
+
+        st.subheader('賣出交易建議')
+        st.write(sell_suggestion)
+        st.write(f'賣出信號強度: {sell_score}/8')
+
+        st.subheader('最近 10 根 K 線數據')
+        st.dataframe(data.tail(10)[['Open', 'High', 'Low', 'Close', 'Volume']])
+
+        # 成交量走勢圖（確保顯示）
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.subheader('價格走勢')
+            st.line_chart(data['Close'].tail(50))
+        with col2:
+            st.subheader('MACD Histogram')
+            st.line_chart(data['Histogram'].tail(50))
+        with col3:
+            st.subheader('成交量')
+            st.bar_chart(data['Volume'].tail(50))
+
+        # 最後更新時間戳（視覺確認刷新）
+        st.info(f"最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# 初始載入數據
+refresh_data()
+
+# 自動刷新邏輯（回歸非阻塞 rerun 方法，避免 sleep 阻塞 UI 和圖表消失）
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = time.time()
+
+if enable_auto_refresh and auto_interval_minutes > 0:
+    interval_seconds = auto_interval_minutes * 60
+    if time.time() - st.session_state.last_refresh_time >= interval_seconds:
+        st.session_state.last_refresh_time = time.time()
+        st.rerun()
+
+# 手動刷新按鈕（側邊欄參數變化時自動 reruns）
+st.sidebar.markdown("---")
+if st.sidebar.button('立即刷新數據'):
+    st.session_state.last_refresh_time = time.time()
+    st.rerun()
+
+st.sidebar.info(f'建議每 {refresh_minutes} 分鐘手動刷新一次，以獲取最新數據。周末將自動切換至每日數據。')
+if enable_auto_refresh:
+    st.sidebar.success(f'自動刷新已啟用，每 {auto_interval_minutes} 分鐘一次。')
