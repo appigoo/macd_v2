@@ -7,7 +7,7 @@ import requests
 from streamlit_autorefresh import st_autorefresh
 import time
 
-# 計算 MACD
+# ===== 技術指標計算 =====
 def calculate_macd(df, fast=12, slow=26, signal=9):
     df = df.dropna(subset=['Close'])
     if df.empty:
@@ -19,16 +19,13 @@ def calculate_macd(df, fast=12, slow=26, signal=9):
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
-# 計算 RSI
 def calculate_rsi(df, period=14):
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(window=period).mean()
     loss = (-delta.clip(upper=0)).rolling(window=period).mean()
     rs = gain / loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
-# 計算 Stochastic
 def calculate_stochastic(df, k_period=14, d_period=3):
     low_min = df['Low'].rolling(window=k_period).min()
     high_max = df['High'].rolling(window=k_period).max()
@@ -36,13 +33,10 @@ def calculate_stochastic(df, k_period=14, d_period=3):
     d = k.rolling(window=d_period).mean()
     return k, d
 
-# OBV
 def calculate_obv(df):
     sign = np.sign(df['Close'].diff())
-    obv = (sign * df['Volume']).fillna(0).cumsum()
-    return obv
+    return (sign * df['Volume']).fillna(0).cumsum()
 
-# MFI
 def calculate_mfi(df, period=14):
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     raw_money_flow = typical_price * df['Volume']
@@ -51,7 +45,6 @@ def calculate_mfi(df, period=14):
     ratio = pos_flow / neg_flow.replace(0, np.nan)
     return 100 - (100 / (1 + ratio))
 
-# BB
 def calculate_bb(df, period=20, std=2):
     sma = df['Close'].rolling(period).mean()
     stdv = df['Close'].rolling(period).std()
@@ -59,7 +52,7 @@ def calculate_bb(df, period=20, std=2):
     lower = sma - std * stdv
     return upper, sma, lower
 
-# 分歧監測
+# ===== 分歧偵測 =====
 def detect_bullish_divergence(df, hist_col, lookback=5):
     lows = df['Low'].tail(lookback)
     hist = df[hist_col].tail(lookback)
@@ -70,7 +63,7 @@ def detect_bearish_divergence(df, hist_col, lookback=5):
     hist = df[hist_col].tail(lookback)
     return (highs.iloc[-1] > highs.max()) and (hist.iloc[-1] < hist.max())
 
-# Telegram 通知
+# ===== Telegram 發送 =====
 def send_telegram_notification(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -83,14 +76,12 @@ def send_telegram_notification(message):
     except Exception as e:
         st.error(f"發送 Telegram 通知時出錯: {e}")
 
-# 數據抓取
+# ===== 數據獲取 =====
 def get_data(ticker, period, interval):
     try:
         df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
-        if df.empty:
-            # 若週末則抓日線備用
-            if datetime.now().weekday() >= 5:
-                df = yf.download(ticker, period='5d', interval='1d', auto_adjust=False, progress=False)
+        if df.empty and datetime.now().weekday() >= 5:
+            df = yf.download(ticker, period='5d', interval='1d', auto_adjust=False, progress=False)
         if df.empty:
             return pd.DataFrame()
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
@@ -100,8 +91,8 @@ def get_data(ticker, period, interval):
         st.error(f"獲取數據失敗: {e}")
         return pd.DataFrame()
 
-# 初始化頁面
-st.title('股票日內交易助手（修正版）')
+# ===== Streamlit 介面 =====
+st.title('股票日內交易助手（修正穩定版）')
 
 # Telegram 設定
 telegram_ready = False
@@ -110,42 +101,40 @@ try:
     CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
     telegram_ready = True
 except:
-    st.warning("未設定 Telegram，請確保 .streamlit/secrets.toml 填寫 BOT_TOKEN、CHAT_ID")
+    st.warning("未設定 Telegram，請於 .streamlit/secrets.toml 配置 BOT_TOKEN 和 CHAT_ID")
 
-# 側邊輸入
+# 側邊設定參數
 with st.sidebar:
     st.subheader('參數設定')
     ticker = st.text_input('股票代碼', 'TSLA')
     period = st.selectbox('抓取時間', ['1d', '5d', '10d'], index=1)
     interval = st.selectbox('K線間隔', ['1m', '5m', '15m', '1d'], index=1)
-    refresh_minutes = st.number_input('建議刷新間隔（分鐘）', 5, min_value=1)
-    enable_auto_refresh = st.checkbox('啟用自動刷新', False)
-    if enable_auto_refresh:
-        auto_interval = st.selectbox('自動刷新間隔 (min)', [1, 2, 3, 5], index=0)
-    else:
-        auto_interval = 0
+    refresh_minutes = st.number_input('建議刷新間隔（分鐘）', value=5, min_value=1)
+    enable_auto_refresh = st.checkbox('啟用自動刷新', value=False)
+    auto_interval = st.selectbox('自動刷新間隔 (min)', [1, 2, 3, 5], index=0) if enable_auto_refresh else 0
 
-    macd_fast = st.number_input('MACD Fast', 12)
-    macd_slow = st.number_input('MACD Slow', 26)
-    macd_signal = st.number_input('MACD Signal', 9)
-    rsi_period = st.number_input('RSI Period', 14)
-    stoch_k = st.number_input('Stoch K', 14)
-    stoch_d = st.number_input('Stoch D', 3)
-    mfi_period = st.number_input('MFI Period', 14)
-    bb_period = st.number_input('BB Period', 20)
-    bb_std = st.number_input('BB Std', 2.0, step=0.1)
+    macd_fast = st.number_input('MACD Fast', value=12)
+    macd_slow = st.number_input('MACD Slow', value=26)
+    macd_signal = st.number_input('MACD Signal', value=9)
+    rsi_period = st.number_input('RSI Period', value=14)
+    stoch_k = st.number_input('Stoch K', value=14)
+    stoch_d = st.number_input('Stoch D', value=3)
+    mfi_period = st.number_input('MFI Period', value=14)
+    bb_period = st.number_input('BB Period', value=20)
+    bb_std = st.number_input('BB Std', value=2.0, step=0.1)
     if telegram_ready:
-        enable_telegram_buy = st.checkbox('啟用買入通知', False)
-        enable_telegram_sell = st.checkbox('啟用賣出通知', False)
+        enable_telegram_buy = st.checkbox('啟用買入 Telegram 通知', value=False)
+        enable_telegram_sell = st.checkbox('啟用賣出 Telegram 通知', value=False)
     else:
         enable_telegram_buy = enable_telegram_sell = False
 
 placeholder = st.empty()
 
-# 自動刷新
+# 自動刷新模組
 if enable_auto_refresh and auto_interval > 0:
     st_autorefresh(interval=auto_interval * 60 * 1000, key="auto_refresh")
 
+# ===== 主函數 =====
 def refresh_data():
     df = get_data(ticker, period, interval)
     if df.empty:
@@ -204,12 +193,8 @@ def refresh_data():
 
     with placeholder:
         st.metric("最新收盤價", f"{latest['Close']:.2f}")
-        st.write(f"MACD Histogram: {latest['Histogram']:.4f}")
+        st.write(f"RSI: {latest['RSI']:.2f} | MACD Histogram: {latest['Histogram']:.4f}")
         st.write(f"多頭分歧: {'是' if bull_div else '否'} | 熊頭分歧: {'是' if bear_div else '否'}")
-        st.write(f"RSI: {latest['RSI']:.2f}")
-        st.write(f"%K/%D: {latest['%K']:.2f}/{latest['%D']:.2f}")
-        st.write(f"MFI: {latest['MFI']:.2f}")
-        st.write(f"OBV: {latest['OBV']:.0f}")
         st.progress(buy_score / 7)
         st.progress(sell_score / 7)
         st.subheader("買入建議")
