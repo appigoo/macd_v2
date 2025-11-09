@@ -92,7 +92,7 @@ def get_data(ticker, period, interval):
         return pd.DataFrame()
 
 # ===== Streamlit 介面 =====
-st.title('股票日內交易助手（修正穩定版）')
+st.title('股票日內交易助手（正式穩定版）')
 
 # Telegram 設定
 telegram_ready = False
@@ -106,22 +106,22 @@ except:
 # 側邊設定參數
 with st.sidebar:
     st.subheader('參數設定')
-    ticker = st.text_input('股票代碼', 'TSLA')
+    ticker = st.text_input('股票代碼', value='TSLA')
     period = st.selectbox('抓取時間', ['1d', '5d', '10d'], index=1)
     interval = st.selectbox('K線間隔', ['1m', '5m', '15m', '1d'], index=1)
     refresh_minutes = st.number_input('建議刷新間隔（分鐘）', value=5, min_value=1)
     enable_auto_refresh = st.checkbox('啟用自動刷新', value=False)
     auto_interval = st.selectbox('自動刷新間隔 (min)', [1, 2, 3, 5], index=0) if enable_auto_refresh else 0
 
-    macd_fast = st.number_input('MACD Fast', value=12)
-    macd_slow = st.number_input('MACD Slow', value=26)
-    macd_signal = st.number_input('MACD Signal', value=9)
-    rsi_period = st.number_input('RSI Period', value=14)
-    stoch_k = st.number_input('Stoch K', value=14)
-    stoch_d = st.number_input('Stoch D', value=3)
-    mfi_period = st.number_input('MFI Period', value=14)
-    bb_period = st.number_input('BB Period', value=20)
-    bb_std = st.number_input('BB Std', value=2.0, step=0.1)
+    macd_fast = st.number_input('MACD Fast', value=12, min_value=1)
+    macd_slow = st.number_input('MACD Slow', value=26, min_value=1)
+    macd_signal = st.number_input('MACD Signal', value=9, min_value=1)
+    rsi_period = st.number_input('RSI Period', value=14, min_value=1)
+    stoch_k = st.number_input('Stoch K', value=14, min_value=1)
+    stoch_d = st.number_input('Stoch D', value=3, min_value=1)
+    mfi_period = st.number_input('MFI Period', value=14, min_value=1)
+    bb_period = st.number_input('BB Period', value=20, min_value=1)
+    bb_std = st.number_input('BB Std', value=2.0, min_value=0.1, step=0.1)
     if telegram_ready:
         enable_telegram_buy = st.checkbox('啟用買入 Telegram 通知', value=False)
         enable_telegram_sell = st.checkbox('啟用賣出 Telegram 通知', value=False)
